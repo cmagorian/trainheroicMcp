@@ -1,0 +1,33 @@
+# Credentials — never commit
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
+# Build
+dist/
+build/
+*.egg-info/
+*.whl
+*.tar.gz
+
+# Test / tooling cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Session token cache (contains live credentials)
+# ~/.config/trainheroic/ lives outside the repo, but just in case:
+session.json
+
+# IDE
+.idea/
+.vscode/
+
+# Local MCP registration (contains machine-specific absolute paths)
+.mcp.json
