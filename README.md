@@ -47,11 +47,14 @@ and only re-login if it expires.
 
 **Option B — session token directly**
 
-If you have a session token (grab it from the `session-token` header in
-mitmproxy or browser DevTools):
+1. Log in at [trainheroic.com](https://trainheroic.com)
+2. Open DevTools (`F12`) → **Network** tab
+3. Click any request to `api.trainheroic.com`
+4. Under **Request Headers**, find `session-token`
+5. Copy that value into `.env`:
 
 ```env
-TRAINHEROIC_SESSION_TOKEN=2a2f35ce349afe9bb06bb6a21d58a455
+TRAINHEROIC_SESSION_TOKEN=<your-session-token>
 ```
 
 ### 3. Verify credentials
