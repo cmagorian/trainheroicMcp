@@ -78,6 +78,41 @@ class TestInit:
         assert c.team_id == 999
         assert c.team_name == "Shared Team"
 
+    def test_program_to_team_mapping_built(self, httpx_mock):
+        add_init_responses(httpx_mock)
+        c = TrainHeroicClient(session_token="tok")
+        assert c._program_to_team == {2001: 1001}
+
+    def test_team_id_for_program_returns_correct_team(self, httpx_mock):
+        add_init_responses(httpx_mock)
+        c = TrainHeroicClient(session_token="tok")
+        assert c.team_id_for_program(2001) == 1001
+
+    def test_team_id_for_program_returns_none_for_unknown(self, httpx_mock):
+        add_init_responses(httpx_mock)
+        c = TrainHeroicClient(session_token="tok")
+        assert c.team_id_for_program(9999) is None
+
+    def test_program_to_team_covers_multiple_teams(self, httpx_mock):
+        httpx_mock.add_response(method="GET", url=f"{BASE}/v5/user", json=MOCK_PROFILE)
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{BASE}/1.0/athlete/userlicense/",
+            json={
+                "licenses": {
+                    "team": [
+                        {"id": 100, "programId": 200, "title": "Team A"},
+                        {"id": 101, "programId": 201, "title": "Team B"},
+                    ],
+                    "team_share": [],
+                    "unlicensed": [],
+                }
+            },
+        )
+        c = TrainHeroicClient(session_token="tok")
+        assert c.team_id_for_program(200) == 100
+        assert c.team_id_for_program(201) == 101
+
     def test_session_token_sent_in_header(self, httpx_mock):
         add_init_responses(httpx_mock)
         TrainHeroicClient(session_token="secret-tok")

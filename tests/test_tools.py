@@ -38,40 +38,68 @@ class TestGetTeamInfo:
 
 
 class TestGetWorkoutHistory:
-    def test_explicit_dates_sent_as_params(self, patched_server, httpx_mock):
+    @staticmethod
+    def _range_reqs(httpx_mock):
+        return [r for r in httpx_mock.get_requests() if "programworkout/range" in str(r.url)]
+
+    def test_fetches_one_request_per_day(self, patched_server, httpx_mock):
+        for _ in range(3):
+            httpx_mock.add_response(
+                method="GET",
+                url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
+                json=[],
+            )
+        server.get_workout_history(start_date="2026-01-01", end_date="2026-01-03")
+        reqs = self._range_reqs(httpx_mock)
+        assert len(reqs) == 3
+        assert reqs[0].url.params["startDate"] == "2026-01-01"
+        assert reqs[0].url.params["endDate"] == "2026-01-01"
+        assert reqs[2].url.params["startDate"] == "2026-01-03"
+        assert reqs[2].url.params["endDate"] == "2026-01-03"
+
+    def test_each_day_request_uses_single_day_range(self, patched_server, httpx_mock):
+        for _ in range(2):
+            httpx_mock.add_response(
+                method="GET",
+                url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
+                json=[],
+            )
+        server.get_workout_history(start_date="2026-01-01", end_date="2026-01-02")
+        for req in self._range_reqs(httpx_mock):
+            assert req.url.params["startDate"] == req.url.params["endDate"]
+            assert req.url.params["preview"] == "false"
+
+    def test_results_from_all_days_are_combined(self, patched_server, httpx_mock):
         httpx_mock.add_response(
             method="GET",
             url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
-            json=[],
+            json=[{"id": 1, "date": "2026-01-01"}],
         )
-        server.get_workout_history(start_date="2026-01-01", end_date="2026-01-31")
-        req = httpx_mock.get_requests()[-1]
-        assert req.url.params["startDate"] == "2026-01-01"
-        assert req.url.params["endDate"] == "2026-01-31"
-        assert req.url.params["preview"] == "false"
-
-    def test_default_dates_are_set(self, patched_server, httpx_mock):
         httpx_mock.add_response(
             method="GET",
             url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
-            json=[],
+            json=[{"id": 2, "date": "2026-01-02"}],
         )
-        server.get_workout_history()
-        req = httpx_mock.get_requests()[-1]
-        assert "startDate" in req.url.params
-        assert "endDate" in req.url.params
+        result = server.get_workout_history(start_date="2026-01-01", end_date="2026-01-02")
+        assert len(result) == 2
+        assert result[0]["id"] == 1
+        assert result[1]["id"] == 2
 
-    def test_weeks_back_param_changes_start_date(self, patched_server, httpx_mock):
+    def test_weeks_back_sets_correct_start_date(self, patched_server, httpx_mock):
         from datetime import date, timedelta
-        httpx_mock.add_response(
-            method="GET",
-            url=re.compile(r".*/programworkout/range.*"),
-            json=[],
-        )
+        # weeks_back=1: 8 days inclusive (today-7 through today)
+        num_days = (date.today() - (date.today() - timedelta(weeks=1))).days + 1
+        for _ in range(num_days):
+            httpx_mock.add_response(
+                method="GET",
+                url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
+                json=[],
+            )
         server.get_workout_history(weeks_back=1)
-        req = httpx_mock.get_requests()[-1]
+        reqs = self._range_reqs(httpx_mock)
+        assert len(reqs) == num_days
         expected_start = (date.today() - timedelta(weeks=1)).isoformat()
-        assert req.url.params["startDate"] == expected_start
+        assert reqs[0].url.params["startDate"] == expected_start
 
 
 class TestGetWorkoutDetails:
@@ -103,6 +131,17 @@ class TestGetWorkoutDetails:
         server.get_workout_details(program_workout_id=123, team_id=9999)
         req = httpx_mock.get_requests()[-1]
         assert "/teams/9999" in req.url.path
+
+    def test_program_id_resolves_to_matching_team(self, patched_server, httpx_mock):
+        # patched_server has team_id=1001 for program_id=2001 (from MOCK_LICENSE)
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/v5/programWorkouts/\d+/teams/1001.*"),
+            json={},
+        )
+        server.get_workout_details(program_workout_id=123, program_id=2001)
+        req = httpx_mock.get_requests()[-1]
+        assert "/teams/1001" in req.url.path
 
 
 class TestGetExerciseStats:

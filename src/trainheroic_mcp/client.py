@@ -109,6 +109,15 @@ class TrainHeroicClient:
         self.team_id: int | None = all_teams[0]["id"] if all_teams else None
         self.program_id: int | None = all_teams[0].get("programId") if all_teams else None
         self.team_name: str = all_teams[0].get("title", self.full_name) if all_teams else self.full_name
+        self._program_to_team: dict[int, int] = {
+            t["programId"]: t["id"]
+            for t in all_teams
+            if t.get("programId") and t.get("id")
+        }
+
+    def team_id_for_program(self, program_id: int) -> int | None:
+        """Return the team_id that owns the given program_id, or None if not found."""
+        return self._program_to_team.get(program_id)
 
     # ── HTTP helpers ──────────────────────────────────────────────────────────
 

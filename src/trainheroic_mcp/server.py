@@ -53,6 +53,30 @@ mcp = FastMCP(
     "TrainHeroic",
     lifespan=lifespan,
     token_verifier=StaticTokenVerifier(_auth_token) if _auth_token else None,
+    instructions="""
+You are connected to the TrainHeroic MCP server, which wraps the TrainHeroic mobile API.
+
+## Date ranges
+The API can return truncated or incomplete data for wide date ranges. Always use the
+smallest range that satisfies the user's request:
+- A single day's workout: use start_date=end_date (e.g. "2026-06-22" / "2026-06-22")
+- A specific week: use a 7-day window
+- Never request more than 30 days at once; if a longer history is needed, make multiple
+  calls and merge the results yourself
+
+get_workout_history already fetches one day at a time internally, so each day's data
+is always complete — but keeping your requested range small avoids unnecessary API calls.
+
+## Linking tools
+When calling get_workout_details, always pass the program_id field from the
+get_workout_history item alongside the program_workout_id. This lets the server
+resolve the correct team automatically and avoids 401 errors on multi-team accounts.
+
+## Workflow for logging a workout
+1. get_workout_history → find the session
+2. get_workout_details(program_workout_id, program_id=...) → get set/exercise IDs
+3. log_workout(saved_workout_id, workout_id, date_string, blocks=[...])
+""",
 )
 
 _client: TrainHeroicClient | None = None
@@ -102,24 +126,43 @@ def get_workout_history(
     Get workout history for a date range.
 
     Dates must be YYYY-MM-DD. If omitted, defaults to the last `weeks_back` weeks.
+    Fetches one day at a time to guarantee the full day's data is returned — the
+    range endpoint truncates responses when multiple days are requested at once.
     Each item includes the workout title, date, and summarizedSavedWorkout with sets and logged results.
     """
-    end = end_date or date.today().isoformat()
-    start = start_date or (date.today() - timedelta(weeks=weeks_back)).isoformat()
-    return _get_client()._get(
-        "/3.0/athlete/programworkout/range",
-        params={"startDate": start, "endDate": end, "preview": "false"},
-    )
+    end = date.fromisoformat(end_date) if end_date else date.today()
+    start = date.fromisoformat(start_date) if start_date else (date.today() - timedelta(weeks=weeks_back))
+    client = _get_client()
+    results = []
+    current = start
+    while current <= end:
+        day_str = current.isoformat()
+        day_results = client._get(
+            "/3.0/athlete/programworkout/range",
+            params={"startDate": day_str, "endDate": day_str, "preview": "false"},
+        )
+        results.extend(day_results)
+        current += timedelta(days=1)
+    return results
 
 
 @mcp.tool()
-def get_workout_details(program_workout_id: int, team_id: int | None = None) -> dict:
+def get_workout_details(
+    program_workout_id: int,
+    team_id: int | None = None,
+    program_id: int | None = None,
+) -> dict:
     """
     Get full workout details for a specific program workout including sets, exercises, and logged weights.
 
-    team_id defaults to the user's primary team.
+    Pass the program_workout_id from get_workout_history.
+    To ensure the correct team is used, also pass program_id (the `program_id` field from the
+    get_workout_history item) — the server will resolve the matching team automatically.
+    Alternatively, pass team_id directly. Falls back to the user's primary team if neither is given.
     """
     c = _get_client()
+    if team_id is None and program_id is not None:
+        team_id = c.team_id_for_program(program_id)
     tid = team_id or c.team_id
     return c._get(f"/v5/programWorkouts/{program_workout_id}/teams/{tid}")
 
