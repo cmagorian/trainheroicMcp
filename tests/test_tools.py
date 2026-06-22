@@ -101,6 +101,54 @@ class TestGetWorkoutHistory:
         expected_start = (date.today() - timedelta(weeks=1)).isoformat()
         assert reqs[0].url.params["startDate"] == expected_start
 
+    def _workout_with_sets(self, workout_id: int) -> dict:
+        return {
+            "id": workout_id,
+            "date": "2026-01-01",
+            "summarizedSavedWorkout": {
+                "workout": {"id": workout_id},
+                "saved_workout": {
+                    "id": 100,
+                    "completed": 1,
+                    "rpe": 7,
+                    "workoutSets": [{"setId": 1, "weight": 135}],
+                },
+            },
+        }
+
+    def test_workout_sets_stripped_by_default(self, patched_server, httpx_mock):
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
+            json=[self._workout_with_sets(1)],
+        )
+        result = server.get_workout_history(start_date="2026-01-01", end_date="2026-01-01")
+        sw = result[0]["summarizedSavedWorkout"]["saved_workout"]
+        assert "workoutSets" not in sw
+        assert sw["rpe"] == 7
+
+    def test_workout_sets_included_when_requested(self, patched_server, httpx_mock):
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
+            json=[self._workout_with_sets(1)],
+        )
+        result = server.get_workout_history(
+            start_date="2026-01-01", end_date="2026-01-01", include_sets=True
+        )
+        sw = result[0]["summarizedSavedWorkout"]["saved_workout"]
+        assert "workoutSets" in sw
+        assert sw["workoutSets"][0]["weight"] == 135
+
+    def test_sessions_without_summarized_workout_pass_through(self, patched_server, httpx_mock):
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
+            json=[{"id": 99, "date": "2026-01-01"}],
+        )
+        result = server.get_workout_history(start_date="2026-01-01", end_date="2026-01-01")
+        assert result[0]["id"] == 99
+
 
 class TestGetWorkoutDetails:
     def test_constructs_url_with_ids(self, patched_server, httpx_mock):

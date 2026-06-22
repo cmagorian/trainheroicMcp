@@ -56,25 +56,28 @@ mcp = FastMCP(
     instructions="""
 You are connected to the TrainHeroic MCP server, which wraps the TrainHeroic mobile API.
 
-## Date ranges
-The API can return truncated or incomplete data for wide date ranges. Always use the
-smallest range that satisfies the user's request:
-- A single day's workout: use start_date=end_date (e.g. "2026-06-22" / "2026-06-22")
-- A specific week: use a 7-day window
-- Never request more than 30 days at once; if a longer history is needed, make multiple
-  calls and merge the results yourself
+## Avoiding oversized responses (important)
+API responses can be large. Follow this two-step pattern to avoid truncation:
 
-get_workout_history already fetches one day at a time internally, so each day's data
-is always complete — but keeping your requested range small avoids unnecessary API calls.
+**Step 1 — scan with get_workout_history (no sets)**
+get_workout_history returns lightweight metadata by default (include_sets=False):
+date, workout title, rating, RPE, session notes, and the IDs you need for follow-up calls.
+Use this to find sessions, read top-level notes, and identify what the user did on which days.
+Keep date ranges narrow — 1–2 weeks at a time. For longer histories, make multiple calls.
 
-## Linking tools
-When calling get_workout_details, always pass the program_id field from the
-get_workout_history item alongside the program_workout_id. This lets the server
-resolve the correct team automatically and avoids 401 errors on multi-team accounts.
+**Step 2 — drill in with get_workout_details**
+Once you know the specific session(s) the user cares about, call
+get_workout_details(program_workout_id=..., program_id=...) to get the full set-level data
+(exercises, weights, reps, set notes) for that one session.
+Always pass program_id (from the get_workout_history item) so the server resolves the
+correct team automatically — omitting it can cause 401 errors on multi-team accounts.
+
+Only use get_workout_history with include_sets=True if you need set data for multiple
+days at once AND the range is 1–3 days.
 
 ## Workflow for logging a workout
-1. get_workout_history → find the session
-2. get_workout_details(program_workout_id, program_id=...) → get set/exercise IDs
+1. get_workout_history → find the session (grab program_workout_id and program_id)
+2. get_workout_details(program_workout_id, program_id=...) → get saved_workout_id and block IDs
 3. log_workout(saved_workout_id, workout_id, date_string, blocks=[...])
 """,
 )
@@ -102,6 +105,26 @@ def _get_client() -> TrainHeroicClient:
     return _client
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _strip_workout_sets(workouts: list) -> list:
+    """Remove workoutSets from each item's summarizedSavedWorkout to keep responses small."""
+    result = []
+    for w in workouts:
+        w = dict(w)
+        ssw = w.get("summarizedSavedWorkout")
+        if ssw:
+            ssw = dict(ssw)
+            sw = ssw.get("saved_workout")
+            if sw:
+                sw = dict(sw)
+                sw.pop("workoutSets", None)
+                ssw["saved_workout"] = sw
+            w["summarizedSavedWorkout"] = ssw
+        result.append(w)
+    return result
+
+
 # ── Priority 1: Core data ──────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -121,14 +144,24 @@ def get_workout_history(
     start_date: str | None = None,
     end_date: str | None = None,
     weeks_back: int = 4,
+    include_sets: bool = False,
 ) -> list:
     """
     Get workout history for a date range.
 
     Dates must be YYYY-MM-DD. If omitted, defaults to the last `weeks_back` weeks.
-    Fetches one day at a time to guarantee the full day's data is returned — the
-    range endpoint truncates responses when multiple days are requested at once.
-    Each item includes the workout title, date, and summarizedSavedWorkout with sets and logged results.
+    Fetches one day at a time to guarantee the full day's data is returned.
+
+    Each item includes: id, program_workout_id, date, workout_title, program_id,
+    and summarizedSavedWorkout with completed, workout_rating, rpe, and notes.
+
+    By default (include_sets=False) the workoutSets array is omitted from each session
+    to keep the response size manageable. Use this for scanning history, finding sessions,
+    and reading top-level notes/ratings.
+
+    Set include_sets=True only when you need set-level exercise data AND you are querying
+    a narrow range (1-3 days). For full set data on a single known session, prefer
+    get_workout_details(program_workout_id, program_id) instead.
     """
     end = date.fromisoformat(end_date) if end_date else date.today()
     start = date.fromisoformat(start_date) if start_date else (date.today() - timedelta(weeks=weeks_back))
@@ -143,6 +176,8 @@ def get_workout_history(
         )
         results.extend(day_results)
         current += timedelta(days=1)
+    if not include_sets:
+        results = _strip_workout_sets(results)
     return results
 
 
