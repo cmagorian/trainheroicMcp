@@ -5,6 +5,7 @@ patched to a fully-initialised mock client (via the `patched_server` fixture).
 
 import json
 import re
+from datetime import datetime
 
 import pytest
 
@@ -163,6 +164,86 @@ class TestGetWorkoutHistory:
         assert result[0]["id"] == 99
         assert result[0]["date"] == "2026-01-01"
 
+    def test_projected_items_include_cache_timestamp(self, patched_server, httpx_mock):
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
+            json=[{"id": 1, "date": "2026-01-01"}],
+        )
+        result = server.get_workout_history(start_date="2026-01-01", end_date="2026-01-01")
+        assert "data_cached_at" in result[0]
+        assert result[0]["data_cached_at"] is not None
+
+    def test_past_date_served_from_cache_on_second_call(self, patched_server, httpx_mock):
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
+            json=[{"id": 1, "date": "2026-01-01"}],
+        )
+        server.get_workout_history(start_date="2026-01-01", end_date="2026-01-01")
+        result = server.get_workout_history(start_date="2026-01-01", end_date="2026-01-01")
+        assert len(self._range_reqs(httpx_mock)) == 1
+        assert result[0]["id"] == 1
+
+    def test_data_cached_at_is_valid_iso_timestamp(self, patched_server, httpx_mock):
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
+            json=[{"id": 1, "date": "2026-01-01"}],
+        )
+        result = server.get_workout_history(start_date="2026-01-01", end_date="2026-01-01")
+        ts = result[0]["data_cached_at"]
+        dt = datetime.fromisoformat(ts)
+        assert dt.tzinfo is not None
+
+    def test_partial_cache_hit_fetches_only_uncached_days(self, patched_server, httpx_mock):
+        # Prime the cache for day 1 only
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
+            json=[{"id": 1, "date": "2026-01-01"}],
+        )
+        server.get_workout_history(start_date="2026-01-01", end_date="2026-01-01")
+        # Now add a response only for day 2; day 1 must come from cache
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
+            json=[{"id": 2, "date": "2026-01-02"}],
+        )
+        result = server.get_workout_history(start_date="2026-01-01", end_date="2026-01-02")
+        assert len(self._range_reqs(httpx_mock)) == 2  # 1 (prime) + 1 (day 2 only)
+        assert result[0]["id"] == 1
+        assert result[1]["id"] == 2
+
+    def test_cache_bust_refetches_every_day(self, patched_server, httpx_mock):
+        for _ in range(4):
+            httpx_mock.add_response(
+                method="GET",
+                url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
+                json=[{"id": 1, "date": "2026-01-01"}],
+            )
+        server.get_workout_history(start_date="2026-01-01", end_date="2026-01-02")
+        server.get_workout_history(start_date="2026-01-01", end_date="2026-01-02", cache_bust=True)
+        assert len(self._range_reqs(httpx_mock)) == 4
+
+    def test_cache_bust_overwrites_stored_entry(self, patched_server, httpx_mock):
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
+            json=[{"id": 1, "date": "2026-01-01"}],
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
+            json=[{"id": 99, "date": "2026-01-01"}],
+        )
+        server.get_workout_history(start_date="2026-01-01", end_date="2026-01-01")
+        server.get_workout_history(start_date="2026-01-01", end_date="2026-01-01", cache_bust=True)
+        # Third call — no bust, must serve the overwritten value
+        result = server.get_workout_history(start_date="2026-01-01", end_date="2026-01-01")
+        assert len(self._range_reqs(httpx_mock)) == 2
+        assert result[0]["id"] == 99
+
 
 class TestGetWorkoutDetails:
     def test_constructs_url_with_ids(self, patched_server, httpx_mock):
@@ -204,6 +285,69 @@ class TestGetWorkoutDetails:
         server.get_workout_details(program_workout_id=123, program_id=2001)
         req = httpx_mock.get_requests()[-1]
         assert "/teams/1001" in req.url.path
+
+    def test_result_includes_cache_timestamp(self, patched_server, httpx_mock):
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/v5/programWorkouts/555/teams/1001.*"),
+            json={"id": 555},
+        )
+        result = server.get_workout_details(program_workout_id=555)
+        assert "data_cached_at" in result
+        assert result["data_cached_at"] is not None
+
+    def test_second_call_uses_cache(self, patched_server, httpx_mock):
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/v5/programWorkouts/555/teams/1001.*"),
+            json={"id": 555},
+        )
+        server.get_workout_details(program_workout_id=555)
+        result = server.get_workout_details(program_workout_id=555)
+        detail_reqs = [r for r in httpx_mock.get_requests() if "programWorkouts/555" in str(r.url)]
+        assert len(detail_reqs) == 1
+        assert result["id"] == 555
+
+    def test_data_cached_at_is_valid_iso_timestamp(self, patched_server, httpx_mock):
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/v5/programWorkouts/555/teams/1001.*"),
+            json={"id": 555},
+        )
+        result = server.get_workout_details(program_workout_id=555)
+        dt = datetime.fromisoformat(result["data_cached_at"])
+        assert dt.tzinfo is not None
+
+    def test_cache_bust_refetches_despite_cached_entry(self, patched_server, httpx_mock):
+        for _ in range(2):
+            httpx_mock.add_response(
+                method="GET",
+                url=re.compile(r".*/v5/programWorkouts/555/teams/1001.*"),
+                json={"id": 555},
+            )
+        server.get_workout_details(program_workout_id=555)
+        server.get_workout_details(program_workout_id=555, cache_bust=True)
+        detail_reqs = [r for r in httpx_mock.get_requests() if "programWorkouts/555" in str(r.url)]
+        assert len(detail_reqs) == 2
+
+    def test_cache_bust_overwrites_stored_entry(self, patched_server, httpx_mock):
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/v5/programWorkouts/555/teams/1001.*"),
+            json={"id": 555, "version": 1},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/v5/programWorkouts/555/teams/1001.*"),
+            json={"id": 555, "version": 2},
+        )
+        server.get_workout_details(program_workout_id=555)
+        server.get_workout_details(program_workout_id=555, cache_bust=True)
+        # Third call — no bust, must serve the overwritten (version 2) entry
+        result = server.get_workout_details(program_workout_id=555)
+        detail_reqs = [r for r in httpx_mock.get_requests() if "programWorkouts/555" in str(r.url)]
+        assert len(detail_reqs) == 2
+        assert result["version"] == 2
 
     def test_media_fields_stripped_from_response(self, patched_server, httpx_mock):
         api_payload = {

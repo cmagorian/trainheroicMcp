@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -13,6 +14,40 @@ BASE_URL = "https://api.trainheroic.com"
 # on slow connections; the mobile app itself uses no explicit limit.
 _TIMEOUT = 60
 TOKEN_CACHE_PATH = Path.home() / ".config" / "trainheroic" / "session.json"
+CACHE_DIR = Path.home() / ".config" / "trainheroic" / "cache"
+
+
+class DiskCache:
+    """JSON file cache keyed by string. Each entry stores {cached_at, data}."""
+
+    def __init__(self, cache_dir: Path) -> None:
+        self._dir = cache_dir
+        self._dir.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, key: str) -> Path:
+        return self._dir / f"{key}.json"
+
+    def get(self, key: str, max_age_seconds: float | None = None) -> tuple[dict | list | None, str | None]:
+        """Return (data, cached_at_iso) if a valid entry exists, else (None, None)."""
+        path = self._path(key)
+        if not path.exists():
+            return None, None
+        try:
+            entry = json.loads(path.read_text())
+            cached_at: str = entry["cached_at"]
+            if max_age_seconds is not None:
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(cached_at)).total_seconds()
+                if age > max_age_seconds:
+                    return None, None
+            return entry["data"], cached_at
+        except Exception:
+            return None, None
+
+    def set(self, key: str, data: dict | list) -> str:
+        """Persist data and return the cached_at ISO timestamp."""
+        cached_at = datetime.now(timezone.utc).isoformat()
+        self._path(key).write_text(json.dumps({"cached_at": cached_at, "data": data}))
+        return cached_at
 
 # Confirmed login endpoint. The `t` query param is a millisecond timestamp used
 # for cache-busting by the web client — we generate it fresh per request.
@@ -49,6 +84,7 @@ class TrainHeroicClient:
             raise ValueError("Provide either session_token or email+password")
 
         self._exercise_cache: list | None = None
+        self._cache = DiskCache(CACHE_DIR)
         self._init_context()
 
     @property
@@ -168,6 +204,26 @@ class TrainHeroicClient:
         resp.raise_for_status()
         self._log_response("DELETE", path, resp)
         return resp.json() if resp.content else {}
+
+    def _cached_get(
+        self,
+        path: str,
+        cache_key: str,
+        max_age_seconds: float | None = None,
+        params: dict | None = None,
+        cache_bust: bool = False,
+    ) -> tuple[dict | list, str]:
+        """GET with disk-cache. Returns (data, cached_at_iso).
+
+        cache_bust=True skips the cache lookup and overwrites the stored entry.
+        """
+        if not cache_bust:
+            data, cached_at = self._cache.get(cache_key, max_age_seconds)
+            if data is not None:
+                log.debug("Cache hit: %s", cache_key)
+                return data, cached_at  # type: ignore[return-value]
+        data = self._get(path, params)
+        return data, self._cache.set(cache_key, data)
 
     def exercise_cache(self) -> list:
         if self._exercise_cache is None:

@@ -123,14 +123,14 @@ def _trim_response(obj):
     return obj
 
 
-def _project_history_item(w: dict) -> dict:
+def _project_history_item(w: dict, cached_at: str | None = None) -> dict:
     """
     Flatten a workout-range item to the minimum fields needed for scanning history.
     Drops all nested metadata — use get_workout_details for set-level data.
     """
     ssw = w.get("summarizedSavedWorkout") or {}
     sw = ssw.get("saved_workout") or {}
-    return {
+    item = {
         "id": w.get("id"),
         "workout_id": w.get("workout_id"),
         "program_id": w.get("program_id"),
@@ -142,7 +142,9 @@ def _project_history_item(w: dict) -> dict:
         "workout_rating": sw.get("workout_rating"),
         "rpe": sw.get("rpe"),
         "notes": sw.get("notes"),
+        "data_cached_at": cached_at,
     }
+    return item
 
 
 # ── Priority 1: Core data ──────────────────────────────────────────────────────
@@ -165,6 +167,7 @@ def get_workout_history(
     end_date: str | None = None,
     weeks_back: int = 4,
     include_sets: bool = False,
+    cache_bust: bool = False,
 ) -> list:
     """
     Get workout history for a date range.
@@ -180,23 +183,32 @@ def get_workout_history(
     Set include_sets=True only when you need set-level exercise data AND you are querying
     a narrow range (1-3 days). For full set data on a single known session, prefer
     get_workout_details(program_workout_id, program_id) instead.
+
+    Set cache_bust=True to force a fresh API fetch for every day in the range,
+    ignoring and overwriting any cached data regardless of TTL.
     """
-    end = date.fromisoformat(end_date) if end_date else date.today()
-    start = date.fromisoformat(start_date) if start_date else (date.today() - timedelta(weeks=weeks_back))
+    today = date.today()
+    end = date.fromisoformat(end_date) if end_date else today
+    start = date.fromisoformat(start_date) if start_date else (today - timedelta(weeks=weeks_back))
     client = _get_client()
-    results = []
+    results: list[tuple[dict, str | None]] = []
     current = start
     while current <= end:
         day_str = current.isoformat()
-        day_results = client._get(
+        # Past dates are immutable; today may still be updated (1h TTL).
+        max_age = None if current < today else 3600.0
+        day_data, cached_at = client._cached_get(
             "/3.0/athlete/programworkout/range",
+            cache_key=f"history_{day_str}",
+            max_age_seconds=max_age,
             params={"startDate": day_str, "endDate": day_str, "preview": "false"},
+            cache_bust=cache_bust,
         )
-        results.extend(day_results)
+        results.extend((item, cached_at) for item in day_data)
         current += timedelta(days=1)
     if not include_sets:
-        return [_project_history_item(w) for w in results]
-    return [_trim_response(w) for w in results]
+        return [_project_history_item(w, cached_at) for w, cached_at in results]
+    return [_trim_response(w) for w, _ in results]
 
 
 @mcp.tool()
@@ -204,6 +216,7 @@ def get_workout_details(
     program_workout_id: int,
     team_id: int | None = None,
     program_id: int | None = None,
+    cache_bust: bool = False,
 ) -> dict:
     """
     Get full workout details for a specific program workout including sets, exercises, and logged weights.
@@ -217,7 +230,15 @@ def get_workout_details(
     if team_id is None and program_id is not None:
         team_id = c.team_id_for_program(program_id)
     tid = team_id or c.team_id
-    return _trim_response(c._get(f"/v5/programWorkouts/{program_workout_id}/teams/{tid}"))
+    data, cached_at = c._cached_get(
+        f"/v5/programWorkouts/{program_workout_id}/teams/{tid}",
+        cache_key=f"details_{program_workout_id}_{tid}",
+        max_age_seconds=7 * 86400,
+        cache_bust=cache_bust,
+    )
+    result = _trim_response(data)
+    result["data_cached_at"] = cached_at  # type: ignore[index]
+    return result
 
 
 @mcp.tool()
@@ -268,9 +289,12 @@ def get_exercise_library(team_id: int | None = None, query: str | None = None) -
     Each exercise has id, title, prescription, param1Type, param2Type, videoUrl, hasVideo.
     """
     c = _get_client()
-    exercises = c._get(
+    tid = team_id or c.team_id
+    exercises, _ = c._cached_get(
         "/v5/users/exercises",
-        params={"teamId": team_id or c.team_id, "userId": c.user_id},
+        cache_key=f"exercises_{tid}",
+        max_age_seconds=86400,
+        params={"teamId": tid, "userId": c.user_id},
     )
     if query:
         q = query.lower()
@@ -286,10 +310,14 @@ def get_circuit_library(team_id: int | None = None) -> list:
     Each circuit has id, title, instructions, prescription, and exerciseIds.
     """
     c = _get_client()
-    return c._get(
+    tid = team_id or c.team_id
+    circuits, _ = c._cached_get(
         "/v5/users/circuits",
-        params={"teamId": team_id or c.team_id, "userId": c.user_id},
+        cache_key=f"circuits_{tid}",
+        max_age_seconds=86400,
+        params={"teamId": tid, "userId": c.user_id},
     )
+    return circuits
 
 
 @mcp.tool()

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -6,6 +7,7 @@ import pytest
 from trainheroic_mcp.client import (
     BASE_URL,
     TOKEN_CACHE_PATH,
+    DiskCache,
     TrainHeroicClient,
     _LOGIN_URL,
 )
@@ -334,3 +336,137 @@ class TestExerciseCache:
         th_client.exercise_cache()  # second call — no second HTTP request
         # If a second request were made, pytest-httpx would raise (no second mock registered)
         assert th_client._exercise_cache == exercises
+
+
+# ── DiskCache ──────────────────────────────────────────────────────────────────
+
+class TestDiskCache:
+    @pytest.fixture
+    def cache(self, tmp_path) -> DiskCache:
+        return DiskCache(tmp_path / "cache")
+
+    def _write_entry(self, cache: DiskCache, key: str, data, age_seconds: float = 0) -> str:
+        ts = (datetime.now(timezone.utc) - timedelta(seconds=age_seconds)).isoformat()
+        (cache._dir / f"{key}.json").write_text(json.dumps({"cached_at": ts, "data": data}))
+        return ts
+
+    # Positive cases
+
+    def test_set_returns_iso_timestamp(self, cache):
+        ts = cache.set("k", {"x": 1})
+        datetime.fromisoformat(ts)  # raises if not a valid ISO string
+
+    def test_get_after_set_returns_data(self, cache):
+        ts = cache.set("k", {"x": 1})
+        data, cached_at = cache.get("k")
+        assert data == {"x": 1}
+        assert cached_at == ts
+
+    def test_get_list_data_round_trips(self, cache):
+        cache.set("k", [1, 2, 3])
+        data, _ = cache.get("k")
+        assert data == [1, 2, 3]
+
+    def test_get_within_ttl_returns_data(self, cache):
+        self._write_entry(cache, "k", {"v": 42}, age_seconds=60)
+        data, _ = cache.get("k", max_age_seconds=3600)
+        assert data == {"v": 42}
+
+    def test_get_with_no_ttl_returns_old_entry(self, cache):
+        self._write_entry(cache, "k", {"v": 1}, age_seconds=999999)
+        data, _ = cache.get("k", max_age_seconds=None)
+        assert data == {"v": 1}
+
+    def test_set_overwrites_previous_entry(self, cache):
+        cache.set("k", {"v": 1})
+        cache.set("k", {"v": 2})
+        data, _ = cache.get("k")
+        assert data == {"v": 2}
+
+    def test_multiple_keys_are_independent(self, cache):
+        cache.set("a", {"v": 1})
+        cache.set("b", {"v": 2})
+        a, _ = cache.get("a")
+        b, _ = cache.get("b")
+        assert a == {"v": 1}
+        assert b == {"v": 2}
+
+    # Negative cases
+
+    def test_get_missing_key_returns_none(self, cache):
+        data, ts = cache.get("nonexistent")
+        assert data is None
+        assert ts is None
+
+    def test_get_expired_entry_returns_none(self, cache):
+        self._write_entry(cache, "k", {"v": 1}, age_seconds=7200)
+        data, ts = cache.get("k", max_age_seconds=3600)
+        assert data is None
+        assert ts is None
+
+    def test_corrupt_json_returns_none(self, cache):
+        (cache._dir / "k.json").write_text("not {{ valid json")
+        data, ts = cache.get("k")
+        assert data is None
+        assert ts is None
+
+    def test_missing_cached_at_field_returns_none(self, cache):
+        (cache._dir / "k.json").write_text(json.dumps({"data": {"v": 1}}))
+        data, ts = cache.get("k", max_age_seconds=60)
+        assert data is None
+        assert ts is None
+
+
+# ── _cached_get ────────────────────────────────────────────────────────────────
+
+class TestCachedGet:
+    # Positive cases
+
+    def test_cache_miss_makes_http_request(self, httpx_mock, th_client):
+        httpx_mock.add_response(method="GET", url=f"{BASE}/v5/user", json={"id": 1})
+        data, cached_at = th_client._cached_get("/v5/user", cache_key="user")
+        assert data == {"id": 1}
+        assert cached_at is not None
+
+    def test_cache_hit_skips_http_request(self, httpx_mock, th_client):
+        httpx_mock.add_response(method="GET", url=f"{BASE}/v5/user", json={"id": 1})
+        th_client._cached_get("/v5/user", cache_key="user")
+        # Second call — no second mock registered, so an HTTP attempt would raise
+        data, _ = th_client._cached_get("/v5/user", cache_key="user")
+        assert data == {"id": 1}
+
+    def test_cache_bust_refetches_despite_valid_entry(self, httpx_mock, th_client):
+        for _ in range(2):
+            httpx_mock.add_response(method="GET", url=f"{BASE}/v5/user", json={"id": 1})
+        before = len(httpx_mock.get_requests())
+        th_client._cached_get("/v5/user", cache_key="user")
+        th_client._cached_get("/v5/user", cache_key="user", cache_bust=True)
+        test_reqs = [r for r in httpx_mock.get_requests()[before:] if r.url.path == "/v5/user"]
+        assert len(test_reqs) == 2
+
+    def test_cache_bust_overwrites_stored_entry(self, httpx_mock, th_client):
+        httpx_mock.add_response(method="GET", url=f"{BASE}/v5/user", json={"id": 1})
+        httpx_mock.add_response(method="GET", url=f"{BASE}/v5/user", json={"id": 99})
+        th_client._cached_get("/v5/user", cache_key="user")
+        th_client._cached_get("/v5/user", cache_key="user", cache_bust=True)
+        # Third call — no bust, must serve the busted (new) value from cache
+        data, _ = th_client._cached_get("/v5/user", cache_key="user")
+        assert data == {"id": 99}
+
+    def test_cached_at_is_valid_iso_timestamp(self, httpx_mock, th_client):
+        httpx_mock.add_response(method="GET", url=f"{BASE}/v5/user", json={})
+        _, cached_at = th_client._cached_get("/v5/user", cache_key="user")
+        dt = datetime.fromisoformat(cached_at)
+        assert dt.tzinfo is not None  # must be timezone-aware
+
+    # Negative cases
+
+    def test_expired_entry_makes_http_request(self, httpx_mock, th_client):
+        # Manually write a stale cache entry (2h old), then call with 1h TTL
+        stale_ts = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        (th_client._cache._dir / "user.json").write_text(
+            json.dumps({"cached_at": stale_ts, "data": {"id": 0}})
+        )
+        httpx_mock.add_response(method="GET", url=f"{BASE}/v5/user", json={"id": 99})
+        data, _ = th_client._cached_get("/v5/user", cache_key="user", max_age_seconds=3600)
+        assert data == {"id": 99}  # stale entry ignored; fresh data returned

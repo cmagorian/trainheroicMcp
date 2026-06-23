@@ -7,10 +7,13 @@ from tests.helpers import add_init_responses
 
 @pytest.fixture(autouse=True)
 def isolated_token_cache(tmp_path, monkeypatch):
-    """Redirect TOKEN_CACHE_PATH to a per-test temp file so tests never read or
-    write the real ~/.config/trainheroic/session.json."""
+    """Redirect TOKEN_CACHE_PATH and CACHE_DIR to per-test temp paths so tests
+    never read or write the real ~/.config/trainheroic/ files."""
     monkeypatch.setattr(
         "trainheroic_mcp.client.TOKEN_CACHE_PATH", tmp_path / "session.json"
+    )
+    monkeypatch.setattr(
+        "trainheroic_mcp.client.CACHE_DIR", tmp_path / "cache"
     )
 
 
