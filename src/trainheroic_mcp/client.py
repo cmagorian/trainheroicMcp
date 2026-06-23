@@ -1,10 +1,17 @@
 import json
+import logging
 import time
 from pathlib import Path
 
 import httpx
 
+log = logging.getLogger(__name__)
+
 BASE_URL = "https://api.trainheroic.com"
+
+# Timeout for API calls. 60s gives headroom for large workout-detail payloads
+# on slow connections; the mobile app itself uses no explicit limit.
+_TIMEOUT = 60
 TOKEN_CACHE_PATH = Path.home() / ".config" / "trainheroic" / "session.json"
 
 # Confirmed login endpoint. The `t` query param is a millisecond timestamp used
@@ -121,38 +128,45 @@ class TrainHeroicClient:
 
     # ── HTTP helpers ──────────────────────────────────────────────────────────
 
+    def _log_response(self, method: str, path: str, resp: httpx.Response) -> None:
+        log.debug("%s %s → %d (%d bytes)", method, path, resp.status_code, len(resp.content))
+
     def _get(self, path: str, params: dict | None = None) -> dict | list:
         resp = httpx.get(
             f"{BASE_URL}{path}", headers=self._headers, params=params,
-            timeout=30, follow_redirects=True,
+            timeout=_TIMEOUT, follow_redirects=True,
         )
         resp.raise_for_status()
+        self._log_response("GET", path, resp)
         return resp.json()
 
     def _post(self, path: str, body: dict | None = None) -> dict | list:
         resp = httpx.post(
             f"{BASE_URL}{path}",
             headers={**self._headers, "content-type": "application/json"},
-            json=body, timeout=30, follow_redirects=True,
+            json=body, timeout=_TIMEOUT, follow_redirects=True,
         )
         resp.raise_for_status()
+        self._log_response("POST", path, resp)
         return resp.json()
 
     def _put(self, path: str, body: dict | None = None) -> dict | list:
         resp = httpx.put(
             f"{BASE_URL}{path}",
             headers={**self._headers, "content-type": "application/json"},
-            json=body, timeout=30, follow_redirects=True,
+            json=body, timeout=_TIMEOUT, follow_redirects=True,
         )
         resp.raise_for_status()
+        self._log_response("PUT", path, resp)
         return resp.json()
 
     def _delete(self, path: str) -> dict:
         resp = httpx.delete(
             f"{BASE_URL}{path}", headers=self._headers,
-            timeout=30, follow_redirects=True,
+            timeout=_TIMEOUT, follow_redirects=True,
         )
         resp.raise_for_status()
+        self._log_response("DELETE", path, resp)
         return resp.json() if resp.content else {}
 
     def exercise_cache(self) -> list:
