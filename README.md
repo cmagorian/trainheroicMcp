@@ -1,75 +1,91 @@
 # TrainHeroic MCP Server
 
-An MCP server that gives Claude (and other AI agents) direct access to your
-[TrainHeroic](https://trainheroic.com) workout data, exercise library, and personal calendar.
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![MCP](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Built from the mobile API (iOS app v8.25.0, endpoints captured via mitmproxy).
+**TrainHeroic MCP server — connect TrainHeroic to Claude via the Model Context Protocol.**
 
----
+Give Claude (and other AI agents) direct access to your [TrainHeroic](https://trainheroic.com) workout data — history, exercise stats, personal records, and personal calendar — through the [Model Context Protocol](https://modelcontextprotocol.io).
 
-## Prerequisites
-
-| Requirement | Install |
-|-------------|---------|
-| Python 3.12+ | [python.org](https://www.python.org/downloads/) |
-| uv | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| Claude Code or OpenClaw | see below |
+Built from the TrainHeroic mobile API (iOS app v8.25.0, endpoints captured via mitmproxy).
 
 ---
 
-## Setup
+## What you can do
 
-### 1. Install dependencies
+Ask Claude things like:
+
+- *"What workouts did I do this week?"*
+- *"What's my working max for back squat and how has it changed?"*
+- *"Show me my bench press PRs by rep count."*
+- *"Log today's session — I did 4×5 back squat at 225 lbs, RPE 8."*
+- *"Create a personal session for tomorrow and add deadlifts and Romanian deadlifts."*
+- *"How did I feel after Monday's workout? What was my energy and stress survey?"*
+- *"Who's on the leaderboard for Tuesday's workout?"*
+
+---
+
+## Quick Start
+
+**Prerequisites:** [Python 3.12+](https://www.python.org/downloads/) and [uv](https://docs.astral.sh/uv/getting-started/installation/)
 
 ```bash
-git clone <repo-url> trainheroicMcp
+# 1. Clone and install
+git clone https://github.com/cmagorian/trainheroicMcp
 cd trainheroicMcp
 make install
-```
 
-### 2. Configure credentials
-
-```bash
+# 2. Add your credentials
 cp .env.example .env
-# edit .env and fill in your credentials
+# Edit .env — see "Credentials" section below
+
+# 3. Register with your AI client
+make setup-claude      # Claude Code
+make setup-openclaw    # OpenClaw
+# See below for Claude Desktop and Cursor
 ```
 
-**Option A — email + password** *(recommended)*
+Restart your AI client and ask: *"What did I train this week?"*
+
+---
+
+## Credentials
+
+Copy `.env.example` to `.env` and choose one of two methods:
+
+### Option A — Email + password (recommended)
 
 ```env
 TRAINHEROIC_EMAIL=you@example.com
 TRAINHEROIC_PASSWORD=yourpassword
 ```
 
-The server authenticates on first start and caches the session token to
-`~/.config/trainheroic/session.json`. Subsequent starts reuse the cached token
-and only re-login if it expires.
+The server logs in on first start and caches the session token to `~/.config/trainheroic/session.json`. Re-login is automatic when the token expires.
 
-**Option B — session token directly**
+### Option B — Session token
+
+If you'd rather not store your password:
 
 1. Log in at [trainheroic.com](https://trainheroic.com)
 2. Open DevTools (`F12`) → **Network** tab
 3. Click any request to `api.trainheroic.com`
-4. Under **Request Headers**, find `session-token`
-5. Copy that value into `.env`:
+4. Under **Request Headers**, copy the `session-token` value
 
 ```env
 TRAINHEROIC_SESSION_TOKEN=<your-session-token>
 ```
 
-### 3. Verify credentials
+Verify your credentials before registering:
 
 ```bash
-make check-env   # confirms .env exists and has credentials
-make run         # starts the server; look for "Ready — logged in as ..." on stderr
+make check-env   # confirms .env is present and populated
+make run         # starts the server — look for "Ready — logged in as ..." on stderr
 ```
-
-Press `Ctrl+C` to stop. The server waits silently for MCP protocol input — that's
-normal for stdio transport.
 
 ---
 
-## Register with your AI client
+## Registering with your AI client
 
 ### Claude Code
 
@@ -77,34 +93,13 @@ normal for stdio transport.
 make setup-claude
 ```
 
-This runs:
-```bash
-claude mcp add --scope project trainheroic -- uv run --directory "$PWD" python -m trainheroic_mcp.server
-```
+This registers the server in `.claude/settings.json` for this project. Credentials are loaded from `.env` automatically.
 
-The server is registered in `.claude/settings.json` for this project. Credentials
-are loaded from the `.env` file in the repo root automatically.
+Run `/mcp` in Claude Code (or restart) to pick up the new server.
 
-Restart Claude Code (or run `/mcp` to reload servers without restarting).
+### Claude Desktop
 
-### OpenClaw
-
-```bash
-make setup-openclaw
-```
-
-This runs:
-```bash
-openclaw mcp set trainheroic '{"command":"uv","args":["run","python","-m","trainheroic_mcp.server"],"cwd":"<repo path>"}'
-```
-
-The server is registered in `~/.openclaw/openclaw.json`. Restart OpenClaw to
-pick up the change. Because `cwd` is set to the repo root, the `.env` file is
-found automatically at startup.
-
-### Claude Desktop (manual)
-
-Open your Claude Desktop config:
+Open the config file for your OS:
 
 | OS | Path |
 |----|------|
@@ -135,109 +130,78 @@ Add the `trainheroic` entry — replace the path and credentials:
 
 Restart Claude Desktop after saving.
 
----
+### Cursor
 
-## Confirming it works
+Open **Cursor Settings** → **MCP** → **Add new MCP server**, or edit `~/.cursor/mcp.json` directly:
 
-Once registered, ask Claude:
-
-> *"What workouts did I do this week?"*
-> *"What's my working max for back squat?"*
-> *"Show me my recent exercise history."*
-
-If something is wrong, the tools return a clear error message explaining what's
-missing (e.g. missing credentials, expired token).
-
----
-
-## Deploying online (use from any machine)
-
-Deploy to [Railway](https://railway.app) to host the server in the cloud. Once
-deployed, any machine running Claude Code or OpenClaw can connect to it over
-HTTPS — no local Python install required on the client side.
-
-### Step 1 — Generate an auth token
-
-The deployed server is public by default. Protect it with a pre-shared bearer token:
-
-```bash
-make generate-token
-# prints: MCP_AUTH_TOKEN=e5b7a8e39538541...
-```
-
-Copy the full line — you'll need it in Steps 2 and 3.
-
-### Step 2 — Deploy to Railway
-
-1. Push this repo to GitHub (it must be a git repo)
-2. Go to [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub repo**
-3. Select this repository — Railway auto-detects the `Dockerfile`
-4. In **Variables**, add all of these:
-
-| Variable | Value |
-|----------|-------|
-| `MCP_TRANSPORT` | `http` |
-| `TRAINHEROIC_EMAIL` | your email |
-| `TRAINHEROIC_PASSWORD` | your password |
-| `MCP_AUTH_TOKEN` | the token from Step 1 |
-
-5. Click **Deploy**. Railway assigns a public URL like `https://trainheroicmcp-production.up.railway.app`
-
-Check the deploy logs — you should see:
-```
-INFO [trainheroic-mcp] Ready — logged in as Your Name (team: Team Name)
-INFO [trainheroic-mcp] HTTP transport — listening on 0.0.0.0:8000/mcp
-```
-
-### Step 3 — Connect from any machine
-
-Replace `YOUR_URL` with the Railway URL and `YOUR_TOKEN` with the token from Step 1.
-
-**Claude Code:**
-```bash
-claude mcp add \
-  --transport http \
-  --header "Authorization: Bearer YOUR_TOKEN" \
-  trainheroic \
-  https://YOUR_URL/mcp
-```
-
-**OpenClaw:**
-```bash
-openclaw mcp set trainheroic \
-  '{"type":"http","url":"https://YOUR_URL/mcp","headers":{"Authorization":"Bearer YOUR_TOKEN"}}'
-```
-
-**Claude Desktop** (`claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
     "trainheroic": {
-      "type": "http",
-      "url": "https://YOUR_URL/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_TOKEN"
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory", "/absolute/path/to/trainheroicMcp",
+        "python", "-m", "trainheroic_mcp.server"
+      ],
+      "env": {
+        "TRAINHEROIC_EMAIL": "you@example.com",
+        "TRAINHEROIC_PASSWORD": "yourpassword"
       }
     }
   }
 }
 ```
 
-### Testing the deployed server
+Restart Cursor after saving.
+
+### OpenClaw
 
 ```bash
-curl -s \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  https://YOUR_URL/mcp
-# Should return an MCP protocol response (not 401)
+make setup-openclaw
 ```
 
-### Running HTTP transport locally (for testing before deploy)
+This registers the server in `~/.openclaw/openclaw.json`. Restart OpenClaw to pick it up.
 
-```bash
-MCP_AUTH_TOKEN=test-token make run-http
-# Server starts on http://localhost:8000/mcp
+---
+
+## Example prompts
+
+### Checking history
+
+```
+What workouts did I complete last week?
+Show me everything I trained in May.
+Did I train on Monday?
+```
+
+### Exercise stats and PRs
+
+```
+What's my current working max for back squat?
+Show me my bench press PRs broken down by rep count.
+What were my last 3 performances on Romanian deadlifts?
+```
+
+### Logging a session
+
+```
+Create a personal session for today and add back squat, bench press, and cable rows.
+Log my workout — I completed all sets. RPE was 7, rating 8 out of 10.
+```
+
+### Surveys and recovery
+
+```
+What were my energy and stress scores after Tuesday's workout?
+Submit my readiness survey: sleep was good, mood was great, energy was ok.
+```
+
+### Social
+
+```
+Who's on the leaderboard for this week's main lift?
+What comments are on today's workout?
 ```
 
 ---
@@ -250,17 +214,19 @@ MCP_AUTH_TOKEN=test-token make run-http
 |------|-------------|------------|
 | `get_user_profile` | Name, ID, coach status | — |
 | `get_team_info` | Teams, program IDs, coaches | — |
-| `get_workout_history` | Workouts in a date range | `start_date`, `end_date`, `weeks_back` |
-| `get_workout_details` | Full sets + logged weights for one session | `program_workout_id` |
+| `get_workout_history` | Workouts in a date range (flat summary by default) | `start_date`, `end_date`, `weeks_back`, `include_sets` |
+| `get_workout_details` | Full sets + logged weights for one session | `program_workout_id`, `program_id` |
 | `get_exercise_stats` | Last performance, PR, working max | `exercise_id`, `stat_date` |
 | `get_personal_records` | All PRs by rep count | `exercise_id` |
 | `get_working_max` | Current working max | `exercise_id` |
+
+> **Tip:** `get_workout_history` returns compact summaries (date, title, rating, RPE, notes) by default. Pass `include_sets=True` for set-level data on a 1–3 day window, or call `get_workout_details` for a single session.
 
 ### Exercise library
 
 | Tool | What it does | Key params |
 |------|-------------|------------|
-| `get_exercise_library` | Full library; filter by name | `query` (optional substring filter) |
+| `get_exercise_library` | Full library; filter by name | `query` (optional substring) |
 | `get_circuit_library` | Full circuit library | — |
 | `get_recent_exercises` | Recently used exercises | — |
 | `get_recent_circuits` | Recently used circuits | — |
@@ -278,7 +244,7 @@ MCP_AUTH_TOKEN=test-token make run-http
 
 | Tool | What it does | Key params |
 |------|-------------|------------|
-| `get_workout_surveys` | Sleep/mood/energy/soreness/stress survey | `saved_workout_ids` |
+| `get_workout_surveys` | Sleep/mood/energy/soreness/stress data | `saved_workout_ids` |
 | `submit_survey` | Answer a survey question | `saved_workout_id`, `question_id`, `answer_id` |
 | `get_workout_messages` | Comments on a workout | `program_workout_id` |
 | `get_workout_leaderboard` | Full leaderboard for a workout | `program_workout_id` |
@@ -287,20 +253,116 @@ MCP_AUTH_TOKEN=test-token make run-http
 
 | | Sleep | Mood | Energy | Soreness | Stress |
 |-|-------|------|--------|----------|--------|
-| question_id | 8 | 9 | 10 | 11 | 12 |
+| `question_id` | 8 | 9 | 10 | 11 | 12 |
 
-| answer_id | 1 | 2 | 3 | 4 | 5 |
-|-----------|---|---|---|---|---|
-| meaning | Awful | Poor | Ok | Good | Excellent |
+| `answer_id` | 1 | 2 | 3 | 4 | 5 |
+|-------------|---|---|---|---|---|
+| Meaning | Awful | Poor | Ok | Good | Excellent |
+
+---
+
+## Deploying online (access from any machine)
+
+Host the server on [Railway](https://railway.app) so any device running Claude Code, Claude Desktop, or OpenClaw can connect to it over HTTPS — no local Python install needed on the client.
+
+### Step 1 — Generate an auth token
+
+```bash
+make generate-token
+# prints: MCP_AUTH_TOKEN=e5b7a8e3...
+```
+
+Copy the full line — you'll need it in Steps 2 and 3.
+
+### Step 2 — Deploy to Railway
+
+1. Push this repo to GitHub
+2. Go to [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub repo**
+3. Select the repository — Railway auto-detects the `Dockerfile`
+4. In **Variables**, add:
+
+| Variable | Value |
+|----------|-------|
+| `MCP_TRANSPORT` | `http` |
+| `TRAINHEROIC_EMAIL` | your email |
+| `TRAINHEROIC_PASSWORD` | your password |
+| `MCP_AUTH_TOKEN` | the token from Step 1 |
+
+5. Click **Deploy**. Railway assigns a URL like `https://trainheroicmcp-production.up.railway.app`
+
+Check the deploy logs for:
+```
+INFO [trainheroic-mcp] Ready — logged in as Your Name (team: Your Team)
+INFO [trainheroic-mcp] HTTP transport — listening on 0.0.0.0:8000/mcp
+```
+
+### Step 3 — Connect from any machine
+
+Replace `YOUR_URL` with your Railway URL and `YOUR_TOKEN` with the token from Step 1.
+
+**Claude Code:**
+```bash
+claude mcp add \
+  --transport http \
+  --header "Authorization: Bearer YOUR_TOKEN" \
+  trainheroic \
+  https://YOUR_URL/mcp
+```
+
+**Claude Desktop / Cursor** (`claude_desktop_config.json` or `~/.cursor/mcp.json`):
+```json
+{
+  "mcpServers": {
+    "trainheroic": {
+      "type": "http",
+      "url": "https://YOUR_URL/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_TOKEN"
+      }
+    }
+  }
+}
+```
+
+**OpenClaw:**
+```bash
+openclaw mcp set trainheroic \
+  '{"type":"http","url":"https://YOUR_URL/mcp","headers":{"Authorization":"Bearer YOUR_TOKEN"}}'
+```
+
+**Test the connection:**
+```bash
+curl -s \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  https://YOUR_URL/mcp
+# Should return an MCP protocol response, not 401
+```
+
+**Run HTTP transport locally (before deploying):**
+```bash
+MCP_AUTH_TOKEN=test-token make run-http
+# Server starts on http://localhost:8000/mcp
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| `No TrainHeroic credentials found` | `.env` missing or empty | `cp .env.example .env` and add credentials |
+| `401 Unauthorized` on startup | Expired or invalid token | Delete `~/.config/trainheroic/session.json` and restart; the server re-logs in |
+| `401` from `get_workout_details` | Wrong team resolved | Pass `program_id` from the `get_workout_history` item alongside `program_workout_id` |
+| Server starts but Claude can't find it | Not registered or client not restarted | Re-run `make setup-claude` and restart Claude |
+| Responses seem incomplete | Date range too wide | Use 1–2 week windows; call `get_workout_details` per session for set data |
 
 ---
 
 ## Known limitations
 
-These endpoints are gated or broken on the backend:
-
-| Tool | Reason |
-|------|--------|
+| Feature | Reason unavailable |
+|---------|-------------------|
 | Lift goals | Requires Athlete Pro subscription |
 | Nutrition calendar | Requires Athlete Pro subscription |
 | Program listing | Coach accounts only |
@@ -312,13 +374,13 @@ These endpoints are gated or broken on the backend:
 
 ### Running tests
 
-No credentials needed — all HTTP calls are intercepted by `pytest-httpx`.
+No credentials needed — all HTTP is intercepted by `pytest-httpx`.
 
 ```bash
-make test              # quiet summary
-make test-v            # verbose, one line per test
-uv run pytest -k "TestLogin"           # one class
-uv run pytest tests/test_client.py    # one file
+make test                                  # quiet summary
+make test-v                                # verbose, one line per test
+uv run pytest -k "TestLogin"              # single class
+uv run pytest tests/test_client.py        # single file
 ```
 
 ### Project structure
@@ -326,13 +388,13 @@ uv run pytest tests/test_client.py    # one file
 ```
 src/trainheroic_mcp/
 ├── client.py     # TrainHeroicClient — auth, token cache, HTTP helpers
-└── server.py     # FastMCP server — 19 tool definitions + startup logging
+└── server.py     # FastMCP server — 19 tool definitions, response projectors
 
 tests/
-├── conftest.py   # fixtures: cache isolation (autouse), th_client, patched_server
-├── helpers.py    # shared constants + add_init_responses helper
-├── test_client.py   # 33 tests: init, login, token cache, HTTP helpers
-└── test_tools.py    # 33 tests: one class per tool
+├── conftest.py      # fixtures: cache isolation (autouse), th_client, patched_server
+├── helpers.py       # shared constants + add_init_responses helper
+├── test_client.py   # init, login, token cache, HTTP helpers
+└── test_tools.py    # one test class per tool
 ```
 
 ### Adding a new tool
