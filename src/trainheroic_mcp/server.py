@@ -107,22 +107,42 @@ def _get_client() -> TrainHeroicClient:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _strip_workout_sets(workouts: list) -> list:
-    """Remove workoutSets from each item's summarizedSavedWorkout to keep responses small."""
-    result = []
-    for w in workouts:
-        w = dict(w)
-        ssw = w.get("summarizedSavedWorkout")
-        if ssw:
-            ssw = dict(ssw)
-            sw = ssw.get("saved_workout")
-            if sw:
-                sw = dict(sw)
-                sw.pop("workoutSets", None)
-                ssw["saved_workout"] = sw
-            w["summarizedSavedWorkout"] = ssw
-        result.append(w)
-    return result
+# Fields that are never useful to a model: video/image URLs and related flags.
+_MEDIA_KEYS = frozenset({
+    "videoUrl", "thumbnailUrl", "videoThumbnailUrl",
+    "imageUrl", "profileImage", "hasVideo",
+})
+
+
+def _trim_response(obj):
+    """Recursively strip media/URL fields from any API response."""
+    if isinstance(obj, dict):
+        return {k: _trim_response(v) for k, v in obj.items() if k not in _MEDIA_KEYS}
+    if isinstance(obj, list):
+        return [_trim_response(i) for i in obj]
+    return obj
+
+
+def _project_history_item(w: dict) -> dict:
+    """
+    Flatten a workout-range item to the minimum fields needed for scanning history.
+    Drops all nested metadata — use get_workout_details for set-level data.
+    """
+    ssw = w.get("summarizedSavedWorkout") or {}
+    sw = ssw.get("saved_workout") or {}
+    return {
+        "id": w.get("id"),
+        "workout_id": w.get("workout_id"),
+        "program_id": w.get("program_id"),
+        "date": w.get("date"),
+        "workout_title": w.get("workout_title"),
+        "feed_item_id": w.get("feed_item_id"),
+        "saved_workout_id": sw.get("id"),
+        "completed": sw.get("completed"),
+        "workout_rating": sw.get("workout_rating"),
+        "rpe": sw.get("rpe"),
+        "notes": sw.get("notes"),
+    }
 
 
 # ── Priority 1: Core data ──────────────────────────────────────────────────────
@@ -152,12 +172,10 @@ def get_workout_history(
     Dates must be YYYY-MM-DD. If omitted, defaults to the last `weeks_back` weeks.
     Fetches one day at a time to guarantee the full day's data is returned.
 
-    Each item includes: id, program_workout_id, date, workout_title, program_id,
-    and summarizedSavedWorkout with completed, workout_rating, rpe, and notes.
-
-    By default (include_sets=False) the workoutSets array is omitted from each session
-    to keep the response size manageable. Use this for scanning history, finding sessions,
-    and reading top-level notes/ratings.
+    By default (include_sets=False) each item is projected to a flat summary:
+    id, workout_id, program_id, date, workout_title, feed_item_id,
+    saved_workout_id, completed, workout_rating, rpe, notes.
+    Use this for scanning history and finding sessions — it's intentionally small.
 
     Set include_sets=True only when you need set-level exercise data AND you are querying
     a narrow range (1-3 days). For full set data on a single known session, prefer
@@ -177,8 +195,8 @@ def get_workout_history(
         results.extend(day_results)
         current += timedelta(days=1)
     if not include_sets:
-        results = _strip_workout_sets(results)
-    return results
+        return [_project_history_item(w) for w in results]
+    return [_trim_response(w) for w in results]
 
 
 @mcp.tool()
@@ -199,7 +217,7 @@ def get_workout_details(
     if team_id is None and program_id is not None:
         team_id = c.team_id_for_program(program_id)
     tid = team_id or c.team_id
-    return c._get(f"/v5/programWorkouts/{program_workout_id}/teams/{tid}")
+    return _trim_response(c._get(f"/v5/programWorkouts/{program_workout_id}/teams/{tid}"))
 
 
 @mcp.tool()

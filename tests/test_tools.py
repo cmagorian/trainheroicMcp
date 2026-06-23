@@ -101,37 +101,49 @@ class TestGetWorkoutHistory:
         expected_start = (date.today() - timedelta(weeks=1)).isoformat()
         assert reqs[0].url.params["startDate"] == expected_start
 
-    def _workout_with_sets(self, workout_id: int) -> dict:
+    def _api_workout(self, workout_id: int) -> dict:
         return {
             "id": workout_id,
+            "workout_id": 200,
+            "program_id": 2001,
             "date": "2026-01-01",
+            "workout_title": "Leg Day",
+            "feed_item_id": 300,
             "summarizedSavedWorkout": {
-                "workout": {"id": workout_id},
+                "workout": {"id": 200, "title": "Leg Day", "instruction": "lots of text..."},
                 "saved_workout": {
-                    "id": 100,
+                    "id": 400,
                     "completed": 1,
                     "rpe": 7,
-                    "workoutSets": [{"setId": 1, "weight": 135}],
+                    "workout_rating": "8.0",
+                    "notes": "felt good",
+                    "workoutSets": [{"setId": 1, "weight": 135, "videoUrl": "https://..."}],
                 },
             },
         }
 
-    def test_workout_sets_stripped_by_default(self, patched_server, httpx_mock):
+    def test_default_projects_to_flat_summary(self, patched_server, httpx_mock):
         httpx_mock.add_response(
             method="GET",
             url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
-            json=[self._workout_with_sets(1)],
+            json=[self._api_workout(1)],
         )
         result = server.get_workout_history(start_date="2026-01-01", end_date="2026-01-01")
-        sw = result[0]["summarizedSavedWorkout"]["saved_workout"]
-        assert "workoutSets" not in sw
-        assert sw["rpe"] == 7
+        item = result[0]
+        assert item["id"] == 1
+        assert item["date"] == "2026-01-01"
+        assert item["workout_title"] == "Leg Day"
+        assert item["saved_workout_id"] == 400
+        assert item["rpe"] == 7
+        assert item["notes"] == "felt good"
+        assert "summarizedSavedWorkout" not in item
+        assert "workoutSets" not in item
 
-    def test_workout_sets_included_when_requested(self, patched_server, httpx_mock):
+    def test_include_sets_returns_sets_without_media_fields(self, patched_server, httpx_mock):
         httpx_mock.add_response(
             method="GET",
             url=re.compile(r".*/3\.0/athlete/programworkout/range.*"),
-            json=[self._workout_with_sets(1)],
+            json=[self._api_workout(1)],
         )
         result = server.get_workout_history(
             start_date="2026-01-01", end_date="2026-01-01", include_sets=True
@@ -139,6 +151,7 @@ class TestGetWorkoutHistory:
         sw = result[0]["summarizedSavedWorkout"]["saved_workout"]
         assert "workoutSets" in sw
         assert sw["workoutSets"][0]["weight"] == 135
+        assert "videoUrl" not in sw["workoutSets"][0]
 
     def test_sessions_without_summarized_workout_pass_through(self, patched_server, httpx_mock):
         httpx_mock.add_response(
@@ -148,6 +161,7 @@ class TestGetWorkoutHistory:
         )
         result = server.get_workout_history(start_date="2026-01-01", end_date="2026-01-01")
         assert result[0]["id"] == 99
+        assert result[0]["date"] == "2026-01-01"
 
 
 class TestGetWorkoutDetails:
@@ -190,6 +204,39 @@ class TestGetWorkoutDetails:
         server.get_workout_details(program_workout_id=123, program_id=2001)
         req = httpx_mock.get_requests()[-1]
         assert "/teams/1001" in req.url.path
+
+    def test_media_fields_stripped_from_response(self, patched_server, httpx_mock):
+        api_payload = {
+            "saved_workout": {
+                "id": 700,
+                "workoutSets": [
+                    {
+                        "exercise": {
+                            "id": 77,
+                            "title": "Bench Press",
+                            "videoUrl": "https://cdn.example.com/video.mp4",
+                            "thumbnailUrl": "https://cdn.example.com/thumb.jpg",
+                            "hasVideo": True,
+                        },
+                        "weight": 185,
+                        "reps": 5,
+                    }
+                ],
+            }
+        }
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r".*/v5/programWorkouts/555/teams/1001.*"),
+            json=api_payload,
+        )
+        result = server.get_workout_details(program_workout_id=555)
+        ex = result["saved_workout"]["workoutSets"][0]["exercise"]
+        assert ex["title"] == "Bench Press"
+        assert ex["id"] == 77
+        assert "videoUrl" not in ex
+        assert "thumbnailUrl" not in ex
+        assert "hasVideo" not in ex
+        assert result["saved_workout"]["workoutSets"][0]["weight"] == 185
 
 
 class TestGetExerciseStats:
